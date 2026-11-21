@@ -1,0 +1,11 @@
+{
+  "propertySources": [
+    {
+      "name": "applicationConfig: [file:/config/application.yml]",
+      "source": {
+        "spring.data.mongodb.auto-index-creation": true,
+        "spring.redis.timeout": "2000ms"
+      }
+    }
+  ]
+}
