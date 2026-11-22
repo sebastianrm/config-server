@@ -1,0 +1,242 @@
+openapi: 3.0.3
+info:
+  title: Yanki Config Server API
+  description: |
+    API REST de Spring Cloud Config Server de la plataforma bancaria Yanki.
+    
+    Servidor de configuración centralizada que distribuye archivos YAML a los microservicios
+    desde un repositorio Git remoto (config-repo).
+    
+    **Características principales:**
+    - Modo Git: clona automáticamente el repositorio config-repo
+    - Distribución de configuración por servicio
+    - Refresh manual de configuración
+    - Endpoints nativos de Spring Cloud Config Server
+  version: 1.0.0
+  contact:
+    name: Sebastian Retamal Morales
+    email: retamal.sebastian@gmail.com
+  license:
+    name: Proprietary
+    url: https://yanki.com/license
+
+servers:
+  - url: http://localhost:8888
+    description: Entorno local de desarrollo
+
+tags:
+  - name: Config
+    description: Endpoints nativos de Spring Cloud Config Server
+
+paths:
+  /{application}/{profile}:
+    get:
+      tags: [Config]
+      summary: Obtiene la configuración de una aplicación
+      description: |
+        Retorna la configuración externa para una aplicación y perfil específicos.
+        
+        **Ejemplo:** GET /accounts-service/default retorna la configuración de accounts-service
+        con el perfil default.
+      operationId: getConfigApplicationProfile
+      parameters:
+        - name: application
+          in: path
+          required: true
+          description: Nombre de la aplicación (ej. accounts-service, auth-service)
+          schema:
+            type: string
+            example: "accounts-service"
+        - name: profile
+          in: path
+          required: true
+          description: Perfil de Spring Boot (ej. default, dev, prod)
+          schema:
+            type: string
+            example: "default"
+      responses:
+        '200':
+          description: Configuración obtenida exitosamente
+          content:
+            application/json:
+              schema:
+                type: object
+                description: Propiedades de configuración en formato Spring Environment
+                example:
+                  name: "accounts-service"
+                  profiles:
+                    - "default"
+                  label: "main"
+                  version: "abc123"
+                  state: null
+                  propertySources:
+                    - name: "https://github.com/sebastianrm/config-repo.git/accounts-service.yml"
+                      source:
+                        spring.data.mongodb.uri: "mongodb://mongo-accounts:27017/yanki_accounts"
+                        server.port: 8083
+        '404':
+          description: Aplicación o perfil no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+  /{application}-{profile}.yml:
+    get:
+      tags: [Config]
+      summary: Obtiene la configuración en formato YAML
+      description: |
+        Retorna la configuración en formato YAML nativo. Útil para debugging y verificación manual.
+        
+        **Ejemplo:** GET /accounts-service-default.yml
+      operationId: getConfigYaml
+      parameters:
+        - name: application
+          in: path
+          required: true
+          description: Nombre de la aplicación
+          schema:
+            type: string
+            example: "accounts-service"
+        - name: profile
+          in: path
+          required: true
+          description: Perfil de Spring Boot
+          schema:
+            type: string
+            example: "default"
+      responses:
+        '200':
+          description: Configuración YAML obtenida exitosamente
+          content:
+            text/yaml:
+              schema:
+                type: string
+                example: |
+                  spring:
+                    data:
+                      mongodb:
+                        uri: mongodb://mongo-accounts:27017/yanki_accounts
+                  server:
+                    port: 8083
+        '404':
+          description: Aplicación o perfil no encontrado
+
+  /{application}-{profile}.json:
+    get:
+      tags: [Config]
+      summary: Obtiene la configuración en formato JSON
+      description: |
+        Retorna la configuración en formato JSON. Alternativa al endpoint YAML.
+        
+        **Ejemplo:** GET /accounts-service-default.json
+      operationId: getConfigJson
+      parameters:
+        - name: application
+          in: path
+          required: true
+          description: Nombre de la aplicación
+          schema:
+            type: string
+            example: "accounts-service"
+        - name: profile
+          in: path
+          required: true
+          description: Perfil de Spring Boot
+          schema:
+            type: string
+            example: "default"
+      responses:
+        '200':
+          description: Configuración JSON obtenida exitosamente
+          content:
+            application/json:
+              schema:
+                type: object
+                example:
+                  spring:
+                    data:
+                      mongodb:
+                        uri: "mongodb://mongo-accounts:27017/yanki_accounts"
+                  server:
+                    port: 8083
+        '404':
+          description: Aplicación o perfil no encontrado
+
+  /actuator/refresh:
+    post:
+      tags: [Config]
+      summary: Refresca la configuración del servidor
+      description: |
+        Fuerza la recarga de la configuración desde el repositorio Git remoto.
+        Útil después de hacer push al repositorio config-repo.
+        
+        **Nota:** Este endpoint refresca la configuración del config-server mismo.
+        Para refrescar los clientes, se debe usar el endpoint /actuator/refresh de cada servicio.
+      operationId: refreshConfig
+      responses:
+        '200':
+          description: Configuración refrescada exitosamente
+          content:
+            application/json:
+              schema:
+                type: array
+                description: Lista de propiedades actualizadas
+                items:
+                  type: string
+                example:
+                  - "spring.data.mongodb.uri"
+                  - "server.port"
+        '500':
+          description: Error al refrescar la configuración
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+components:
+  schemas:
+    ApiError:
+      type: object
+      description: Cuerpo estándar de error de la API Yanki
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+          description: Momento exacto en que se generó el error (ISO 8601)
+          example: "2024-01-15T10:30:00Z"
+        status:
+          type: integer
+          format: int32
+          description: Código de estado HTTP
+          example: 404
+        error:
+          type: string
+          description: Descripción textual del error HTTP
+          example: "Not Found"
+        code:
+          type: string
+          description: Código de negocio específico del error
+          example: "CONFIG_NOT_FOUND"
+        message:
+          type: string
+          description: Descripción legible del error en español
+          example: "Configuración no encontrada para la aplicación especificada"
+        path:
+          type: string
+          description: Ruta de la API que originó el error
+          example: "/accounts-service/default"
+        details:
+          type: object
+          description: Detalle adicional del error
+          additionalProperties: true
+          nullable: true
+
+  securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic
+      description: Autenticación Basic Auth para proteger el config-server
+
+security:
+  - basicAuth: []

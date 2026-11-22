@@ -321,3 +321,4 @@ src/main/java/com/yanki/config
 - `AGENTS.md` (este servicio) - Especificación técnica completa
 - `docker-compose.yml` - Infraestructura (config-server incluido)
 - `config/` - Directorio con archivos de configuración
+- `api/config-server.yaml` - Contrato OpenAPI 3.0 completo con schemas, endpoints y errores
