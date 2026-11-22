@@ -5,7 +5,7 @@
 - **Version**: 1.0.0
 - **Service**: `config-server` (Port 8888)
 - **Part**: I / II (Core Banking Config + Plataforma)
-- **Estado**: ✅ Implementado (auditoría 2026-11-15). `@EnableConfigServer` presente, backend native, Eureka client, Dockerfile multi-etapa, OpenAPI spec. 4 tests (2 pasan, 2 fallan por falta de `ENCRYPT_KEY` — esperado).
+- **Estado**: ✅ Implementado (auditoría 2026-11-22). `@EnableConfigServer` presente, backend Git por defecto (configurable a native), Eureka client, Dockerfile multi-etapa con usuario no root, OpenAPI spec. 4 tests (2 pasan, 2 fallan por falta de `ENCRYPT_KEY` — esperado).
 
 ---
 
@@ -14,7 +14,7 @@
 
 **Tu expertise incluye:**
 - **Java 17 + Spring Boot 3.3.5 + Spring Cloud 2023.0.3** (Config Server, Config Client, Eureka)
-- **Spring Cloud Config Server**: Backend native (`file:./config/`), Git (producción), endpoints `/<app>/<profile>[/<label>]`, `/encrypt`, `/decrypt`
+- **Spring Cloud Config Server**: Backend Git por defecto (configurable a native), endpoints `/<app>/<profile>[/<label>]`, `/encrypt`, `/decrypt`
 - **Spring Cloud Config Client** (client-side): Auto-config, fail-fast, retry con backoff, precedence (shared → service → profile)
 - **Spring Cloud Netflix Eureka Client**: Registro, heartbeat
 - **Spring Data Redis Reactive**: (Opcional, para cache de config resuelta)
@@ -24,6 +24,9 @@
 - **Checkstyle 10.21.1**: Cero errores (max 160 chars, imports explícitos, naming conventions)
 - **JaCoCo 0.8.12**: Cobertura de código
 - **Maven 3.9+**: Build, dependency management, plugins
+- **Lombok 1.18.34**: `@Getter`, `@Setter`, `@Builder`, `@RequiredArgsConstructor`, `@Slf4j`
+- **Resilience4j 2.2.0**: Circuit breaker, time limiter
+- **RxJava 3.1.10**: Reactive programming
 
 **Principios de desarrollo obligatorios:**
 - **Database-per-service**: Config Server no tiene BD propia; servicios consumen config
@@ -41,10 +44,10 @@
 ## Role & Responsibilities
 **Spring Cloud Config Server** — Configuración centralizada para todos los microservicios:
 
-1. **Backend**: `native` → Sistema de archivos local (`file:./config/`)
+1. **Backend**: `Git` por defecto (configurable a native mediante profile)
 2. **Endpoints**: `/<app>/<profile>[/<label>]`, `/{app}-{profile}.yml`
 3. **Refresh**: `/actuator/refresh` (Spring Cloud Bus opcional para broadcast)
-4. **Versionado**: Git (producción) / File system (desarrollo)
+4. **Versionado**: Git (branch/tag/commit via label)
 5. **Cifrado**: `{cipher}` values (requiere JCE Unlimited Strength)
 
 ---
@@ -53,11 +56,13 @@
 | Capability | Implementation |
 |------------|----------------|
 | **Language** | Java 17, Spring Boot 3.3.5, Spring Cloud 2023.0.3 |
-| **Config Server** | Spring Cloud Config Server (native backend) |
+| **Config Server** | Spring Cloud Config Server (Git backend por defecto) |
 | **Config Client** | Spring Cloud Config Client (auto-config) |
 | **Security** | Basic Auth / OAuth2 (prod) |
 | **API Docs** | springdoc-openapi 2.6.0 (actuator mainly) |
 | **Quality** | Checkstyle, JaCoCo |
+| **Reactive** | RxJava 3.1.10, Reactor Test |
+| **Circuit Breaker** | Resilience4j 2.2.0 |
 
 ---
 
@@ -90,9 +95,9 @@ spring:
 
 ---
 
-## File Structure (Native Backend)
+## File Structure (Git Backend)
 ```
-config/
+config-repo/ (Git repository - configurable via CONFIG_GIT_URI)
 ├── application.yml              # Común a todos (shared)
 ├── application-dev.yml          # Profile dev
 ├── application-prod.yml         # Profile prod
@@ -107,6 +112,21 @@ config/
 ├── api-gateway.yml
 ├── discovery-service.yml
 └── config-server.yml
+```
+
+### Configuración Git Backend
+```yaml
+spring:
+  cloud:
+    config:
+      server:
+        git:
+          uri: ${CONFIG_GIT_URI:file:///config-repo}
+          search-paths: ${CONFIG_GIT_SEARCH_PATHS:.}
+          default-label: main
+          force-pull: false
+        health:
+          enabled: true
 ```
 
 ### application.yml (Shared - Ejemplo)
@@ -155,29 +175,33 @@ yanki:
 
 ## Deployment Configuration
 
-### Docker
+### Docker (Multi-etapa con usuario no root)
 ```dockerfile
 FROM maven:3.9-eclipse-temurin-17 AS build
-WORKDIR /app
+WORKDIR /build
 COPY pom.xml .
+RUN mvn -B -q dependency:go-offline
 COPY src ./src
-RUN mvn clean package -DskipTests
+RUN mvn -B clean package -DskipTests
 
 FROM eclipse-temurin:17-jre-alpine
+RUN addgroup -S yanki && adduser -S yanki -G yanki
 WORKDIR /app
-COPY --from=build /app/target/*.jar app.jar
-# Copiar config files
-COPY ../config ./config
+COPY --from=build /build/target/*.jar app.jar
+RUN chown -R yanki:yanki /app
+USER yanki
 EXPOSE 8888
-ENTRYPOINT ["java", "-XX:MaxRAMPercentage=75.0", "-jar", "app.jar"]
+ENV JAVA_OPTS="-XX:MaxRAMPercentage=75.0 -XX:+UseContainerSupport"
+ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar /app/app.jar"]
 ```
 
 ### Environment Variables
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SERVER_PORT` | `8888` | Puerto HTTP |
-| `CONFIG_SERVER_NATIVE_SEARCH_LOCATIONS` | `file:./config` | Ubicación backend native |
-| `CONFIG_SERVER_GIT_URI` | *(prod)* | URI repo Git (producción) |
+| `CONFIG_PROFILE` | `git` | Profile activo (git/native) |
+| `CONFIG_GIT_URI` | `file:///config-repo` | URI repo Git (configurable) |
+| `CONFIG_GIT_SEARCH_PATHS` | `.` | Paths de búsqueda en el repo |
 | `CONFIG_SERVER_GIT_USERNAME` | *(prod)* | User Git |
 | `CONFIG_SERVER_GIT_PASSWORD` | *(prod)* | Pass/Token Git |
 | `ENCRYPT_KEY` | *(prod)* | Clave cifrado `{cipher}` |
@@ -215,7 +239,7 @@ healthcheck:
 
 ### Startup Sequence
 1. Cargar `application.yml` local
-2. Inicializar **native backend** (`file:./config`) → leer todos los `*.yml`
+2. Inicializar **Git backend** (por defecto) → clonar/configurar repo según `CONFIG_GIT_URI`
 3. Registrar en Eureka (`config-server`)
 4. HTTP server 8888
 
@@ -311,9 +335,12 @@ curl -s http://localhost:8888/actuator/health | jq '.components.configServer'
 
 ## Known Issues (Del Análisis)
 1. **✅ Resuelto** `@EnableConfigServer` presente en `ConfigServerApplication.java`
-2. **⚠️ Mejora** Backend native: `file:./config` funciona en local; en Docker los config files se montan como volumen (`-v ./config:/app/config:ro`)
-3. **⚠️ Pendiente** Git backend no configurado para producción (requiere `CONFIG_SERVER_GIT_URI`)
-4. **⚠️ Pendiente** Cifrado no habilitado en dev (requiere `ENCRYPT_KEY` + JCE Unlimited Strength)
+2. **✅ Resuelto** Backend Git configurado por defecto con URI configurable (`CONFIG_GIT_URI`)
+3. **✅ Resuelto** Eureka client registrado correctamente
+4. **✅ Resuelto** Dockerfile multi-etapa con usuario no root (yanki)
+5. **⚠️ Mejora** Checkstyle plugin no ejecutado en build (propiedades definidas, plugin no configurado)
+6. **⚠️ Pendiente** Cifrado no habilitado en dev (requiere `ENCRYPT_KEY` + JCE Unlimited Strength)
+7. **⚠️ Convención** Javadoc en inglés en lugar de español (`ConfigServerApplication.java` y tests)
 
 ---
 

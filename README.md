@@ -3,27 +3,27 @@
 **Spring Cloud Config Server** — Configuración centralizada para todos los microservicios de la plataforma Yanki.
 
 - **Puerto:** `8888`
-- **Backend:** `native` → Sistema de archivos local (`file:./config/`)
-- **Stack:** Java 17, Spring Boot 3.3.5, Spring Cloud Config 2023.0.3, springdoc-openapi
+- **Backend:** `Git` por defecto (configurable a native mediante profile)
+- **Stack:** Java 17, Spring Boot 3.3.5, Spring Cloud Config 2023.0.3, springdoc-openapi, Lombok, Resilience4j, RxJava3
 
 ---
 
-## Estado de Auditoría (2026-11-15)
+## Estado de Auditoría (2026-11-22)
 
-> **Estado:** 🟢 **Implementado** — Spring Cloud Config Server funcional con `@EnableConfigServer`, backend native, Eureka client, Dockerfile multi-etapa, OpenAPI spec.
+> **Estado:** 🟢 **Implementado** — Spring Cloud Config Server funcional con `@EnableConfigServer`, backend Git por defecto, Eureka client, Dockerfile multi-etapa con usuario no root, OpenAPI spec.
 > **Tests:** 4 pruebas (2 pasan, 2 fallan por falta de `ENCRYPT_KEY` — comportamiento esperado en entorno sin clave de cifrado).
 > **Build:** `mvn clean compile` — BUILD SUCCESS.
 
 | Componente | Estado | Detalle |
 |---|---|---|
 | **Clase principal** | ✅ Completo | `ConfigServerApplication.java` con `@EnableConfigServer` y `@SpringBootApplication` |
-| **Configuración** | ✅ Completo | `application.yml` con puerto 8888, backend native, Eureka client, management endpoints |
-| **Docker** | ✅ Completo | `Dockerfile` multi-etapa: build con Maven + JDK 17, runtime JRE 17 Alpine, usuario no root |
+| **Configuración** | ✅ Completo | `application.yml` con puerto 8888, backend Git por defecto, Eureka client, management endpoints |
+| **Docker** | ✅ Completo | `Dockerfile` multi-etapa: build con Maven + JDK 17, runtime JRE 17 Alpine, usuario no root (yanki) |
 | **OpenAPI/Swagger** | ✅ Completo | `config-server.openapi.yml` con 3 endpoints documentados |
 | **Tests** | ✅ Parcial | 4 tests JUnit 5: `contextLoads` ✓, `configEndpointTest` ✓, `encryptEndpointTest` ✗ (sin ENCRYPT_KEY), `decryptEndpointTest` ✗ (sin ENCRYPT_KEY) |
 | **JaCoCo** | ✅ Configurado | Plugin presente, excluye config, infrastructure, adapters, Application, Exception, Response |
 | **Checkstyle** | ⚠️ Mejora | Propiedades definidas en pom.xml, pero plugin `maven-checkstyle-plugin` no ejecutado |
-| **Config-repo** | ✅ Completo | `application.yml` compartido con configuración Git backend y secretos JWT/password |
+| **Config-repo** | ✅ Completo | Git backend configurado con URI configurable (`CONFIG_GIT_URI`) |
 | **Casos de Prueba** | ✅ Completo | 2 casos de prueba documentados (CP-023, CP-024) en `CASOS_PRUEBA/` |
 
 ### Hallazgos de Auditoría
@@ -31,10 +31,10 @@
 | Severidad | Hallazgo | Estado | Detalle |
 |---|---|---|---|
 | ✅ Resuelto | `@EnableConfigServer` ausente | ✅ | Presente en `ConfigServerApplication.java` |
-| ✅ Resuelto | Backend native sin configuración | ✅ | `file:./config/` configurado en `application.yml` |
+| ✅ Resuelto | Backend Git configurado por defecto | ✅ | URI configurable vía `CONFIG_GIT_URI` |
 | ✅ Resuelto | Eureka client no registrado | ✅ | Registrado con `register-with-eureka: true` |
+| ✅ Resuelto | Dockerfile sin usuario no root | ✅ | Usuario `yanki` creado y aplicado |
 | ⚠️ Mejora | Checkstyle plugin no ejecutado | ⚠️ | Propiedades definidas, plugin no configurado en build |
-| ⚠️ Pendiente | Git backend para producción | ⚠️ | Requiere `CONFIG_SERVER_GIT_URI` en entorno prod |
 | ⚠️ Pendiente | Cifrado de valores sensibles | ⚠️ | Requiere `ENCRYPT_KEY` + JCE Unlimited Strength |
 | ⚠️ Convención | Javadoc en inglés | ⚠️ | `ConfigServerApplication.java` y tests con Javadoc en inglés |
 
@@ -101,10 +101,10 @@ curl -X POST http://localhost:8082/actuator/refresh
 
 ---
 
-## 3. Estructura de Archivos (Native Backend)
+## 3. Estructura de Archivos (Git Backend)
 
 ```
-config/
+config-repo/ (Git repository - configurable via CONFIG_GIT_URI)
 ├── application.yml              # Común a TODOS (shared)
 ├── application-dev.yml          # Profile dev
 ├── application-prod.yml         # Profile prod
@@ -119,6 +119,22 @@ config/
 ├── api-gateway.yml
 ├── discovery-service.yml
 └── config-server.yml
+```
+
+### Configuración Git Backend
+
+```yaml
+spring:
+  cloud:
+    config:
+      server:
+        git:
+          uri: ${CONFIG_GIT_URI:file:///config-repo}
+          search-paths: ${CONFIG_GIT_SEARCH_PATHS:.}
+          default-label: main
+          force-pull: false
+        health:
+          enabled: true
 ```
 
 ### application.yml (Shared - Ejemplo)
@@ -197,8 +213,9 @@ spring:
 | Variable | Default | Descripción |
 |---|---|---|
 | `SERVER_PORT` | `8888` | Puerto HTTP |
-| `CONFIG_SERVER_NATIVE_SEARCH_LOCATIONS` | `file:./config` | Ubicación backend native |
-| `CONFIG_SERVER_GIT_URI` | *(prod)* | URI repo Git (producción) |
+| `CONFIG_PROFILE` | `git` | Profile activo (git/native) |
+| `CONFIG_GIT_URI` | `file:///config-repo` | URI repo Git (configurable) |
+| `CONFIG_GIT_SEARCH_PATHS` | `.` | Paths de búsqueda en el repo |
 | `CONFIG_SERVER_GIT_USERNAME` | *(prod)* | User Git |
 | `CONFIG_SERVER_GIT_PASSWORD` | *(prod)* | Pass/Token Git |
 | `ENCRYPT_KEY` | *(prod)* | Clave cifrado `{cipher}` |
@@ -210,18 +227,21 @@ spring:
 
 ```dockerfile
 FROM maven:3.9-eclipse-temurin-17 AS build
-WORKDIR /app
+WORKDIR /build
 COPY pom.xml .
+RUN mvn -B -q dependency:go-offline
 COPY src ./src
-RUN mvn clean package -DskipTests
+RUN mvn -B clean package -DskipTests
 
 FROM eclipse-temurin:17-jre-alpine
+RUN addgroup -S yanki && adduser -S yanki -G yanki
 WORKDIR /app
-COPY --from=build /app/target/*.jar app.jar
-# Copiar config files
-COPY ../config ./config
+COPY --from=build /build/target/*.jar app.jar
+RUN chown -R yanki:yanki /app
+USER yanki
 EXPOSE 8888
-ENTRYPOINT ["java", "-XX:MaxRAMPercentage=75.0", "-jar", "app.jar"]
+ENV JAVA_OPTS="-XX:MaxRAMPercentage=75.0 -XX:+UseContainerSupport"
+ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar /app/app.jar"]
 ```
 
 ### Health Check
@@ -268,8 +288,8 @@ mvn clean verify
 ```bash
 docker build -t yanki/config-server:1.0.0 .
 docker run -p 8888:8888 \
-  -v $(pwd)/config:/app/config:ro \
-  -e CONFIG_SERVER_NATIVE_SEARCH_LOCATIONS=file:./config \
+  -e CONFIG_GIT_URI=file:///config-repo \
+  -e CONFIG_PROFILE=git \
   yanki/config-server:1.0.0
 ```
 
