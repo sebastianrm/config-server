@@ -4,12 +4,15 @@ spring:
   application:
     name: config-server
   profiles:
-    active: ${CONFIG_PROFILE:native}
+    active: ${CONFIG_PROFILE:git}
   cloud:
     config:
       server:
-        native:
-          search-locations: ${CONFIG_SEARCH_LOCATIONS:file:./config/}
+        git:
+          uri: ${CONFIG_GIT_URI:file:///config-repo}
+          search-paths: ${CONFIG_GIT_SEARCH_PATHS:.}
+          default-label: main
+          force-pull: false
         health:
           enabled: true
     discovery:
